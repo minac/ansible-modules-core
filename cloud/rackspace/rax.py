@@ -388,6 +388,87 @@ def delete(module, instance_ids=[], wait=True, wait_timeout=300, kept=[]):
     else:
         module.exit_json(**results)
 
+def rebuild(module, instance_ids=[], wait=True, wait_timeout=300, kept=[]):
+    cs = pyrax.cloudservers
+
+    changed = False
+    instances = {}
+    servers = []
+
+    # Handle the file contents
+    for rpath in files.keys():
+        lpath = os.path.expanduser(files[rpath])
+        try:
+            fileobj = open(lpath, 'r')
+            files[rpath] = fileobj.read()
+            fileobj.close()
+        except Exception, e:
+            module.fail_json(msg='Failed to load %s' % lpath)
+
+    for instance_id in instance_ids:
+        servers.append(cs.servers.get(instance_id))
+
+    for server in servers:
+        try:
+            server.rebuild(image=image, key_name=key_name)
+        except Exception, e:
+            module.fail_json(msg=e.message)
+        else:
+            changed = True
+
+        instance = rax_to_dict(server, 'server')
+        instances[instance['id']] = instance
+
+    # If requested, wait for server rebuild
+    if wait:
+        end_time = time.time() + wait_timeout
+        infinite = wait_timeout == 0
+        while infinite or time.time() < end_time:
+            for server in servers:
+                instance_id = server.id
+                try:
+                    server.get()
+                except:
+                    server.status == 'ERROR'
+
+            if not filter(lambda s: s.status not in FINAL_STATUSES,
+                          servers):
+                break
+            time.sleep(5)
+
+    timeout = filter(lambda s: s['status'] not in ('', 'ERROR'),
+                     instances.values())
+    error = filter(lambda s: s['status'] in ('ERROR'),
+                   instances.values())
+    success = filter(lambda s: s['status'] in ('', 'ACTIVE'),
+                     instances.values())
+
+    instances = [rax_to_dict(s, 'server') for s in kept]
+
+    results = {
+        'changed': changed,
+        'action': 'rebuild',
+        'instances': instances,
+        'success': success,
+        'error': error,
+        'timeout': timeout,
+        'instance_ids': {
+            'instances': [i['id'] for i in instances],
+            'success': [i['id'] for i in success],
+            'error': [i['id'] for i in error],
+            'timeout': [i['id'] for i in timeout]
+        }
+    }
+
+    if timeout:
+        results['msg'] = 'Timeout waiting for all servers to rebuild'
+    elif error:
+        results['msg'] = 'Failed to rebuild all servers'
+
+    if 'msg' in results:
+        module.fail_json(**results)
+    else:
+        module.exit_json(**results)
 
 def cloudservers(module, state=None, name=None, flavor=None, image=None,
                  meta={}, key_name=None, files={}, wait=True, wait_timeout=300,
